@@ -1,0 +1,80 @@
+function aa = ssccluster(I,superlabel,)
+%% function aa = ssccluster(I,superlabel) 
+%%compute saliency map
+%%Input:
+%       I             : RGB color image
+%       superlabel    : superpixel of labels of the image I
+%%Output:
+%       aa            : the clustering result of the superpixels 
+
+lam_location = 0.5;
+beta = 0.2;
+feature_num = 9;
+Cst =1; %Enter 1 to use the additional affine constraint sum(c) == 1
+OptM = 'Lasso'; %OptM can be {'L1Perfect','L1Noisy','Lasso','L1ED'}
+lambda = 0.01;%%Regularization parameter in 'Lasso' or the noise level for 'L1Noise'
+K =3;
+n = 7; % the clusters number 
+
+I_gray = im2double(rgb2gray(I)); 
+[Ix,Iy] = gradient(I_gray);
+Ixx = gradient(Ix);
+[Iyx,Iyy] = gradient(Iy);
+Ix= (Ix -min(Ix(:)))./(max(Ix(:))-min(Ix(:)));
+Iy= (Iy -min(Iy(:)))./(max(Iy(:))-min(Iy(:)));
+Ixx= (Ixx -min(Ixx(:)))./(max(Ixx(:))-min(Ixx(:)));
+Iyy= (Iyy -min(Iyy(:)))./(max(Iyy(:))-min(Iyy(:)));
+
+% build the weight matrix with the location info
+super_prop = regionprops(superlabel, 'all');
+super_num = numel(super_prop);
+W = zeros(super_num);
+mean_x(super_num,1) = 0; % store the x_location
+mean_y(super_num,1) = 0; % store the y_location
+% convert the colorspace to LAB
+I = RGB2Lab(I);
+L = I(:,:,1); a = I(:,:,2); b = I(:,:,3);
+L= (L -min(L(:)))./(max(L(:))-min(L(:)));
+a= (a -min(a(:)))./(max(a(:))-min(a(:)));
+b= (b -min(b(:)))./(max(b(:))-min(b(:)));
+
+cov_matrix(feature_num,feature_num,super_num) = 0;
+
+X(feature_num, super_num) = 0;% feature-vector
+for i = 1: super_num
+      X(1, i) = mean(L(super_prop(i).PixelIdxList));
+      X(2, i) = mean(a(super_prop(i).PixelIdxList));
+      X(3, i) = mean(b(super_prop(i).PixelIdxList));
+      X(4, i) = mean(Ix(super_prop(i).PixelIdxList));
+      X(5, i) = mean(Iy(super_prop(i).PixelIdxList));
+      X(6, i) = mean(Ixx(super_prop(i).PixelIdxList));
+      X(7, i) = mean(Iyy(super_prop(i).PixelIdxList));
+      temp   = super_prop(i).PixelList ./ repmat([size(I(:,:,1),2),size(I(:,:,1),1)],super_prop(i).Area,1);% normalize the x y
+      X(end-1:end,i) = mean(temp)' * lam_location;
+      fea_matrix(super_prop(i).Area ,feature_num) = 0;
+      fea_matrix = [L(super_prop(i).PixelIdxList) a(super_prop(i).PixelIdxList) b(super_prop(i).PixelIdxList) ...
+      Ix(super_prop(i).PixelIdxList) Iy(super_prop(i).PixelIdxList) Ixx(super_prop(i).PixelIdxList) ...
+      Iyy(super_prop(i).PixelIdxList) temp* lam_location];
+      cov_matrix(:,:,i) = cov(fea_matrix);
+end
+
+for m = 1:super_num
+    for p = 1:m
+        eigvalues = eig(cov_matrix(:,:,m),cov_matrix(:,:,p));
+        if (sum(isnan(eigvalues)))
+            eigvalues = eig(cov_matrix(:,:,p),cov_matrix(:,:,m));
+        end  
+        if (sum(isnan(eigvalues)))
+            eigvalues(isnan(eigvalues)) = 0;
+        end
+        W(m,p) = sqrt(abs(sum(log(eigvalues).*log(eigvalues))));
+        W(p,m) = W(m,p);
+    end
+end
+W = exp(-0.5*W);
+L = diag(diag(W)) - W + diag(sum(W,2));
+L = (L - min(L(:)))/(max(L(:)) - min(L(:)));
+CMat = SparseCoefRecoveryXYL(X,Cst,OptM,lambda,L,beta);%get the sparse matrix
+CKSym = BuildAdjacency(CMat,K);
+Grps = SpectralClustering(CKSym,n);% compute the clustering result
+aa = Grps(:,2);
